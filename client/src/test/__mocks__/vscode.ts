@@ -21,6 +21,7 @@ const window = {
   showQuickPick: jest.fn(),
 };
 const workspace = {
+  workspaceFolders: undefined,
   openTextDocument: jest.fn(),
   applyEdit: jest.fn(),
   getConfiguration: jest.fn().mockReturnValue({

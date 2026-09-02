@@ -23,6 +23,7 @@ const { window, workspace } = require("vscode");
 describe("validations", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    workspace.workspaceFolders = undefined;
   });
 
   test("validateUserSettings with the wrong/path shows an error message to the user", async () => {
@@ -51,6 +52,16 @@ describe("validations", () => {
     expect(await validateCompilerPath("t3make")).toBeTruthy();
     expect(window.showErrorMessage).not.toBeCalled();
     expect(window.showInformationMessage).toBeCalledTimes(1);
+  });
+
+  test("validateCompilerPath expands the workspace folder before invoking the compiler", async () => {
+    workspace.workspaceFolders = [{ uri: { fsPath: "/path/to/project" } }];
+    runCommand.mockResolvedValue(
+      "TADS Compiler 3.1.3  Copyright 1999, 2012 Michael J. Roberts... and more text that follows",
+    );
+
+    expect(await validateCompilerPath("${workspaceFolder}/tools/t3make")).toBeTruthy();
+    expect(runCommand).toHaveBeenCalledWith('"/path/to/project/tools/t3make"');
   });
 
   test("validateCompilerPath with wrong path resulting empty string fails validation", async () => {

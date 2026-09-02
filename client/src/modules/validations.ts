@@ -1,6 +1,7 @@
 import { CancellationError, Uri, window, workspace } from "vscode";
 import { runCommand } from "./run-command";
 import { basename } from "path";
+import { expandWorkspaceFolder } from "./workspace-path";
 
 
 export const versionRegexp = new RegExp(`TADS Compiler (.*) Copyright `);
@@ -11,7 +12,8 @@ export async function validateUserSettings() {
 }
 
 export async function validateCompilerPath(compilerPath: string, showSuccess = true) {
-  const output = await runCommand(`"${compilerPath}"`);
+  const expandedCompilerPath = expandWorkspaceFolder(compilerPath);
+  const output = await runCommand(`"${expandedCompilerPath}"`);
   if (output) {
     const versionResult = versionRegexp.exec(output.toString());
     if (versionResult && versionResult.length > 0) {
