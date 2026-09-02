@@ -20,8 +20,8 @@ pool:
   vmImage: $(imageName)
 
 variables:
-  COVERALLS_REPO_TOKEN: $(CoverallsToken)
-  FROBTADS_REF: "master"
+  # Reviewed immutable upstream revision. Update deliberately after reviewing frobtads changes.
+  FROBTADS_REF: "05c44ba1876b3ff94b9044b0a3f1f62f6d1a252b"
   FROBTADS_CACHE_DIR: "$(Pipeline.Workspace)/frobtads-cache"
   FROBTADS_PREFIX: "$(Pipeline.Workspace)/frobtads-cache/install"
   NPM_CACHE_DIR: "$(Pipeline.Workspace)/.npm"
@@ -42,8 +42,6 @@ steps:
     displayName: "Restore frobtads cache"
     inputs:
       key: 'frobtads | "$(Agent.OS)" | "$(FROBTADS_REF)"'
-      restoreKeys: |
-        frobtads | "$(Agent.OS)"
       path: "$(FROBTADS_CACHE_DIR)"
       cacheHitVar: FROBTADS_CACHE_HIT
     condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
@@ -59,7 +57,11 @@ steps:
   - bash: |
       set -euo pipefail
       rm -rf "$(Pipeline.Workspace)/frobtads-src"
-      git clone --depth 1 --branch "$(FROBTADS_REF)" https://github.com/realnc/frobtads.git "$(Pipeline.Workspace)/frobtads-src"
+      git init "$(Pipeline.Workspace)/frobtads-src"
+      git -C "$(Pipeline.Workspace)/frobtads-src" remote add origin https://github.com/realnc/frobtads.git
+      git -C "$(Pipeline.Workspace)/frobtads-src" fetch --depth 1 origin "$(FROBTADS_REF)"
+      git -C "$(Pipeline.Workspace)/frobtads-src" checkout --detach FETCH_HEAD
+      test "$(git -C "$(Pipeline.Workspace)/frobtads-src" rev-parse HEAD)" = "$(FROBTADS_REF)"
       cd "$(Pipeline.Workspace)/frobtads-src"
       if [ -x ./configure ]; then
         ./configure

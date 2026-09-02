@@ -1,13 +1,14 @@
 import { preprocessTads3Files, preprocessTads2Files } from "./parser/preprocessor";
 import { statSync, readFileSync } from "fs";
 import { URI, Utils } from "vscode-uri";
-import { spawn, Pool, Worker, Thread } from "threads";
+import { spawn, Worker, Thread } from "threads";
 import { connection } from "./server";
 import { clearCompletionCache } from "./modules/completions";
 import { basename } from "path";
 import { parseTads2Files } from "./parseTads2Files";
 import { symbolManager } from "./modules/symbol-manager";
 import { serverState } from './state';
+import { limitProjectParseInputs, MAX_PARSE_INPUT_CHARS, withWorkerTimeout } from "./modules/parse-limits";
 
 let lastMakeFileLocation: string | undefined;
 let makefileStructure;
@@ -19,9 +20,6 @@ const generalHeaderIncludeRegExp = RegExp(/tads3[/]include[/]|tads3\\include\\/)
 
 
 const SLOW_FILE_THRESHOLD_MS = 5000;
-const WORKER_TIMEOUT_MS = 120_000; // 2 minutes — if a file takes longer, skip it
-
-
 /**
  * Reads and parses the makefile to get additional information
  * such as which library it uses, paths, flags etc..
@@ -85,6 +83,7 @@ export async function preprocessAndParseTads2Files(
   filePaths: string[] | undefined,
   token: any,
 ) {
+  if (token?.isCancellationRequested) return;
   try {
     const t2PreprocessorPath: string =
       (await connection.workspace.getConfiguration("tads.preprocessor.path")) ?? "t3make";
@@ -96,6 +95,7 @@ export async function preprocessAndParseTads2Files(
       t2PreprocessorPath,
       [libFolder],
       connection,
+      () => !!token?.isCancellationRequested,
     );
     await connection.sendNotification("response/preprocessed/list", [...serverState.preprocessedFilesCacheMap.keys()]);
   } catch (error: any) {
@@ -105,7 +105,8 @@ export async function preprocessAndParseTads2Files(
     });
     return;
   }
-  parseTads2Files(filePaths);
+  if (token?.isCancellationRequested) return;
+  await parseTads2Files(filePaths, token);
 }
 
 /**
@@ -119,6 +120,7 @@ export async function preprocessAndParseTads3Files(
   filePaths: string[] | undefined,
   token: any,
 ) {
+  if (token?.isCancellationRequested) return;
   if (lastMakeFileLocation !== makefileLocation) {
     lastMakeFileLocation = makefileLocation;
     makefileStructure = analyzeMakefile(makefileLocation);
@@ -134,7 +136,13 @@ export async function preprocessAndParseTads3Files(
 
   try {
     const t3makeCompilerPath: string = (await connection.workspace.getConfiguration("tads3.compiler.path")) ?? "t3make";
-    await preprocessTads3Files(makefileLocation, serverState.preprocessedFilesCacheMap, t3makeCompilerPath, connection);
+    await preprocessTads3Files(
+      makefileLocation,
+      serverState.preprocessedFilesCacheMap,
+      t3makeCompilerPath,
+      connection,
+      () => !!token?.isCancellationRequested,
+    );
   } catch (error: any) {
     connection.console.error(error.message);
     await connection.sendNotification("symbolparsing/allfiles/failed", {
@@ -144,6 +152,8 @@ export async function preprocessAndParseTads3Files(
   }
 
   await connection.sendNotification("response/preprocessed/list", [...serverState.preprocessedFilesCacheMap.keys()]);
+
+  if (token?.isCancellationRequested) return;
 
   let allFilePaths = filePaths;
 
@@ -170,6 +180,23 @@ export async function preprocessAndParseTads3Files(
     await connection.sendNotification("symbolparsing/allfiles/failed", {
       error: `No files found to parse`,
     });
+    return;
+  }
+
+  const limitedInputs = limitProjectParseInputs(
+    allFilePaths,
+    (filePath) => serverState.preprocessedFilesCacheMap.get(filePath) ?? "",
+  );
+  const oversizedFiles = limitedInputs.skipped;
+  if (oversizedFiles.length > 0) {
+    connection.console.warn(
+      `[parse] Skipping ${oversizedFiles.length} file(s) larger than ${MAX_PARSE_INPUT_CHARS} characters: ${oversizedFiles.map((x) => basename(x)).join(", ")}`,
+    );
+    allFilePaths = limitedInputs.accepted;
+  }
+  if (allFilePaths.length === 0) {
+    symbolManager.parsingInProgress = false;
+    await connection.sendNotification("symbolparsing/allfiles/success", { allFilePaths, elapsedTime: 0 });
     return;
   }
 
@@ -206,7 +233,20 @@ export async function preprocessAndParseTads3Files(
     await connection.sendNotification("symbolparsing/processing", [filePath, 0, totalFiles, 1]);
     const worker = await spawn(new Worker(workerPath));
     const text = serverState.preprocessedFilesCacheMap.get(filePath) ?? "";
-    const jobResult = await worker(filePath, text);
+    let jobResult: any;
+    try {
+      jobResult = await withWorkerTimeout(
+        worker(filePath, text),
+        `${basename(filePath)} (${text.length} chars)`,
+        () => !!token?.isCancellationRequested,
+      );
+    } catch (err) {
+      connection.console.error(`[parse] FAILED: ${basename(filePath)} — ${err}`);
+      symbolManager.parsingInProgress = false;
+      await Thread.terminate(worker);
+      await connection.sendNotification("symbolparsing/allfiles/failed", { error: String(err) });
+      return;
+    }
     connection.console.debug(`Worker finished with result`);
     const {
       symbols,
@@ -250,19 +290,15 @@ export async function preprocessAndParseTads3Files(
       connection.console.error(`Error during thread termination: ${err}`);
     }
 
-    // Setup a WorkerPool if we have a collection of files to parse
+    // Use one terminable worker per job so timeouts actually stop parser CPU work.
   } else {
     connection.console.debug(`Preparing to parse a total of ${allFilePaths.length} files`);
-    const poolSize = allFilePaths.length >= maxNumberOfParseWorkerThreads ? maxNumberOfParseWorkerThreads : 1;
-    connection.console.debug(`Setting worker thread poolsize to: ${poolSize}`); // Default 6 threads
-
-    const workerPool = Pool(() => spawn(new Worker(workerPath)), poolSize);
-
-    // Track which files are currently being parsed by worker threads
+    const configuredWorkerCount = Number(maxNumberOfParseWorkerThreads);
+    const safeWorkerCount = Number.isInteger(configuredWorkerCount) && configuredWorkerCount > 0 ? configuredWorkerCount : 1;
+    const poolSize = Math.min(allFilePaths.length, safeWorkerCount);
+    connection.console.debug(`Setting worker concurrency to: ${poolSize}`);
     const inFlightFiles = new Set<string>();
     const inFlightStartTimes = new Map<string, number>();
-
-    // Stall detection: periodically log files that have been parsing for a long time
     const STALL_CHECK_INTERVAL_MS = 15_000;
     const STALL_WARN_THRESHOLD_MS = 30_000;
     const stallCheckTimer = setInterval(() => {
@@ -279,26 +315,18 @@ export async function preprocessAndParseTads3Files(
 
     try {
       const startTime = Date.now();
-
-      for (const filePath of allFilePaths) {
-        connection.console.debug(`Queuing parsing job ${filePath}`);
-
-        workerPool.queue(async (parseJob) => {
+      let nextFileIndex = 0;
+      const consumeFiles = async () => {
+        while (nextFileIndex < allFilePaths.length && !token?.isCancellationRequested) {
+          const filePath = allFilePaths[nextFileIndex++];
           const fileBaseName = basename(filePath);
           inFlightFiles.add(fileBaseName);
           inFlightStartTimes.set(fileBaseName, Date.now());
           connection.console.log(`[parse] STARTED: ${fileBaseName} (in-flight: ${[...inFlightFiles].join(", ")})`);
           await connection.sendNotification("symbolparsing/processing", [filePath, tracker, totalFiles, poolSize, [...inFlightFiles]]);
-
           const text = serverState.preprocessedFilesCacheMap.get(filePath) ?? "";
           const fileStartTime = Date.now();
-
-          // Race the parse job against a timeout so a stuck file doesn't block forever
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error(
-              `TIMEOUT after ${WORKER_TIMEOUT_MS / 1000}s parsing ${fileBaseName} (${text.length} chars)`
-            )), WORKER_TIMEOUT_MS);
-          });
+          const worker = await spawn(new Worker(workerPath));
 
           try {
             const {
@@ -313,7 +341,11 @@ export async function preprocessAndParseTads3Files(
               expressionSymbols,
               scopes,
               parseInfo,
-            } = await Promise.race([parseJob(filePath, text), timeoutPromise]);
+            } = await withWorkerTimeout(
+              worker(filePath, text),
+              `${fileBaseName} (${text.length} chars)`,
+              () => !!token?.isCancellationRequested,
+            );
 
             logParseInfo(parseInfo);
 
@@ -333,6 +365,12 @@ export async function preprocessAndParseTads3Files(
           } catch (err) {
             const elapsed = Date.now() - fileStartTime;
             connection.console.error(`[parse] FAILED: ${fileBaseName} after ${elapsed}ms — ${err}`);
+          } finally {
+            try {
+              await Thread.terminate(worker);
+            } catch (err) {
+              connection.console.error(`Error during thread termination: ${err}`);
+            }
           }
 
           inFlightFiles.delete(fileBaseName);
@@ -340,18 +378,12 @@ export async function preprocessAndParseTads3Files(
           tracker++;
           await connection.sendNotification("symbolparsing/success", [filePath, tracker, totalFiles, poolSize, [...inFlightFiles]]);
           connection.console.log(`[parse] FINISHED: ${fileBaseName} (${tracker}/${totalFiles}, remaining in-flight: ${inFlightFiles.size > 0 ? [...inFlightFiles].join(", ") : "none"})`);
-        });
-      }
-      clearCompletionCache();
+        }
+      };
 
-      try {
-        await workerPool.completed();
-        await workerPool.terminate();
-      } catch (err) {
-        connection.console.error(`Error happened during awaiting pool completion/termination: ` + err);
-      } finally {
-        clearInterval(stallCheckTimer);
-      }
+      await Promise.all(Array.from({ length: poolSize }, () => consumeFiles()));
+      clearCompletionCache();
+      clearInterval(stallCheckTimer);
 
       const elapsedTime = Date.now() - startTime;
       connection.console.debug(`All files parsed within ${elapsedTime} ms`);
@@ -359,11 +391,9 @@ export async function preprocessAndParseTads3Files(
       await await connection.sendNotification("symbolparsing/allfiles/success", { allFilePaths, elapsedTime });
     } catch (err) {
       clearInterval(stallCheckTimer);
-      await workerPool.terminate();
       symbolManager.parsingInProgress = false;
       connection.console.error(`Error happened during parsing of files: ${err}`);
       await connection.sendNotification("symbolparsing/allfiles/failed", allFilePaths);
     }
   }
 }
-

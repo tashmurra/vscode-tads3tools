@@ -13,7 +13,7 @@ export async function validateUserSettings() {
 
 export async function validateCompilerPath(compilerPath: string, showSuccess = true) {
   const expandedCompilerPath = expandWorkspaceFolder(compilerPath);
-  const output = await runCommand(`"${expandedCompilerPath}"`);
+  const output = await runCommand(expandedCompilerPath);
   if (output) {
     const versionResult = versionRegexp.exec(output.toString());
     if (versionResult && versionResult.length > 0) {
@@ -41,7 +41,7 @@ export async function validateTads2Settings() {
 
 export async function validatePreprocessorPath(ppPath: string, showSuccess = true) {
   const versionArgument = "--version";
-  const output = await runCommand(`"${ppPath}" ${versionArgument}`);
+  const output = await runCommand(expandWorkspaceFolder(ppPath), [versionArgument]);
   if (output) {
     if (output.toString().includes("Copyright (C)")) {
       if (!showSuccess) {

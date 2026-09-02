@@ -115,7 +115,7 @@ export async function parseDocument(
     {
       location: ProgressLocation.Window,
       title: "Parsing symbols",
-      cancellable: false,
+      cancellable: true,
     },
 
     async (progress, withProgressToken) => {
@@ -125,10 +125,10 @@ export async function parseDocument(
         return false;
       });
       if (tadsVersion === 3) {
-        await sendParseTads3Request(ctx, filePaths, serverProcessCancelTokenSource, client, extensionState);
+        await sendParseTads3Request(ctx, filePaths, withProgressToken, client, extensionState);
       }
       if (tadsVersion === 2) {
-        await sendParseTads2Request(ctx, filePaths, serverProcessCancelTokenSource, client, extensionState);
+        await sendParseTads2Request(ctx, filePaths, withProgressToken, client, extensionState);
       }
       return true;
     },
@@ -142,13 +142,11 @@ export async function sendParseTads2Request(
   client,
   extensionState: any,
 ): Promise<any> {
-  serverProcessCancelTokenSource = new CancellationTokenSource();
   extensionState.setPreprocessing(true);
   await client.sendRequest("request/parseTads2Documents", {
     mainFileLocation: extensionState.getTads2MainFile().fsPath,
     filePaths,
-    token: serverProcessCancelTokenSource.token,
-  });
+  }, serverProcessCancelTokenSource);
 }
 
 export async function sendParseTads3Request(
@@ -158,13 +156,11 @@ export async function sendParseTads3Request(
   client,
   extensionState: any,
 ): Promise<any> {
-  serverProcessCancelTokenSource = new CancellationTokenSource();
   extensionState.setPreprocessing(true);
   await client.sendRequest("request/parseDocuments", {
     makefileLocation: extensionState.getChosenMakefileUri().fsPath,
     filePaths: filePaths,
-    token: serverProcessCancelTokenSource.token,
-  });
+  }, serverProcessCancelTokenSource);
 }
 
 export async function cancelParse(

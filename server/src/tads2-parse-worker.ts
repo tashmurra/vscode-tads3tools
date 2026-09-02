@@ -10,6 +10,7 @@ import { PredictionMode } from "antlr4ts/atn/PredictionMode";
 import { DocumentSymbol } from "vscode-languageserver/node";
 import { basename } from "path";
 import { MapNodeData } from "./modules/mapcrawling/MapNodeData";
+import { isParseInputWithinLimit } from "./modules/parse-limits";
 
 class CollectingErrorListener implements ANTLRErrorListener<any> {
   errors: string[] = [];
@@ -26,6 +27,7 @@ class CollectingErrorListener implements ANTLRErrorListener<any> {
 }
 
 expose(function parseFunc(path: string, text: string) {
+  if (!isParseInputWithinLimit(text)) throw new Error(`Parser input exceeds the configured safety limit: ${path}`);
   const fileName = basename(path);
   const startTime = Date.now();
   const symbols: DocumentSymbol[] = [];

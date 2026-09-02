@@ -27,6 +27,7 @@ import { ProgramNode }            from '../parser/ast/nodes';
 import { Tads3v2AstScopeBuilder } from '../parser/Tads3v2AstScopeBuilder';
 import { printAst }               from './ast-printer';
 import { printScopes }            from './scope-printer';
+import { MAX_INLINE_PARSE_INPUT_CHARS } from './parse-limits';
 
 // ── shared parse helper ───────────────────────────────────────────────────────
 
@@ -84,6 +85,7 @@ export function handleDevShowAst(
 ): { output: string } {
   const { content, source } = resolveContent(params, documents, preprocessedCache);
   if (!content) return { output: `// No content found for ${params.uri}` };
+  if (content.length > MAX_INLINE_PARSE_INPUT_CHARS) return { output: "// Input is too large for interactive AST parsing." };
 
   const program = parseContent(content);
   const header  = `// Source: ${source}\n// URI:    ${params.uri}\n\n`;
@@ -97,6 +99,7 @@ export function handleDevShowScopes(
 ): { output: string } {
   const { content, source } = resolveContent(params, documents, preprocessedCache);
   if (!content) return { output: `// No content found for ${params.uri}` };
+  if (content.length > MAX_INLINE_PARSE_INPUT_CHARS) return { output: "// Input is too large for interactive AST parsing." };
 
   const program = parseContent(content);
   const header  = `// Source: ${source}\n// URI:    ${params.uri}\n\n`;

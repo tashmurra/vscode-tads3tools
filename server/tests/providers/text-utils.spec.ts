@@ -11,7 +11,11 @@ import {
   tokenizeWithIndex,
 } from "../../src/modules/text-utils";
 import { createTemplateSnippetStrings } from "../../src/modules/template-snippets";
-import { createSnippetsFromTemplateItems } from "../../src/modules/text-utils";
+import {
+  createSnippetsFromTemplateItems,
+  MAX_TEMPLATE_ITEMS,
+  MAX_TEMPLATE_SNIPPETS,
+} from "../../src/modules/text-utils";
 import type { TemplateItemNode } from "../../src/parser/ast/nodes";
 
 describe("text-utils test suite", () => {
@@ -415,6 +419,30 @@ describe("text-utils test suite", () => {
         "->${1:masterObject} '${2:vocabWords}' '${3:name}' @${4:location} ",
         "->${1:masterObject} '${2:vocabWords}' '${3:name}' @${4:location} \"${5:desc}\" ",
       ]);
+    });
+
+    test("caps combinatorial expansion of optional template items", () => {
+      const optionalItems: TemplateItemNode[] = Array.from({ length: 40 }, (_, index) => ({
+        propName: `value${index}`,
+        tokenKind: 'sstr',
+        optional: true,
+        isAlternative: false,
+      }));
+
+      const result = createSnippetsFromTemplateItems(optionalItems);
+
+      expect(result).toHaveLength(MAX_TEMPLATE_SNIPPETS);
+    });
+
+    test("rejects template item lists deep enough to exhaust recursive expansion", () => {
+      const items: TemplateItemNode[] = Array.from({ length: MAX_TEMPLATE_ITEMS + 1 }, (_, index) => ({
+        propName: `value${index}`,
+        tokenKind: 'sstr',
+        optional: false,
+        isAlternative: false,
+      }));
+
+      expect(createSnippetsFromTemplateItems(items)).toEqual([]);
     });
 
     test("ActorState templates", () => {

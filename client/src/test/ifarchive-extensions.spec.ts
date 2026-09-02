@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 import { describe, expect, jest } from "@jest/globals";
+import { Readable, Writable } from "stream";
 
 jest.mock("vscode");
 
@@ -39,13 +40,19 @@ jest.mock("fs-extra", () => {
 
 jest.mock("unzipper", () => {
   return {
-    Extract: jest.fn((opts: any) => ({ __extractTarget: opts.path })),
+    Open: { file: jest.fn() },
   };
 });
 
 jest.mock("fs", () => {
   return {
     copyFileSync: jest.fn(),
+    renameSync: jest.fn(),
+    mkdirSync: jest.fn(),
+    mkdtempSync: jest.fn((prefix: string) => `${prefix}test`),
+    rmSync: jest.fn(),
+    unlinkSync: jest.fn(),
+    statSync: jest.fn(() => ({ size: 100 })),
     createReadStream: jest.fn(() => {
       const handlers: Record<string, (...args: any[]) => void> = {};
       return {
@@ -72,16 +79,18 @@ const axios = require("axios");
 const { window, workspace } = require("vscode");
 const { client } = require("../../src/extension");
 const { extensionState } = require("../../src/modules/state");
-const { existsSync, readdirSync, copyFileSync, createReadStream } = require("fs");
+const { existsSync, readdirSync, copyFileSync, createReadStream, renameSync, unlinkSync, statSync, mkdirSync, mkdtempSync, rmSync } = require("fs");
 const { ensureDirSync } = require("fs-extra");
-const { Extract } = require("unzipper");
+const { Open } = require("unzipper");
 
 import {
   downloadAndCacheFile,
   downloadAndInstallExtension,
   parseIfArchiveIndex,
   performLocalExtensionInstallation,
+  resolveContainedFile,
   unzipFromFiletoFolder,
+  validateArchiveFileName,
 } from "../modules/commands/ifarchive-extensions";
 
 function createDepsForDownloadAndCacheFile() {
@@ -92,9 +101,16 @@ function createDepsForDownloadAndCacheFile() {
       return writer;
     }),
     close: jest.fn(),
+    destroy: jest.fn(),
   };
+  const readableHandlers: Record<string, (...args: any[]) => void> = {};
   const readable = {
     pipe: jest.fn(),
+    on: jest.fn((event: string, handler: (...args: any[]) => void) => {
+      readableHandlers[event] = handler;
+      return readable;
+    }),
+    destroy: jest.fn(),
   };
 
   const deps = {
@@ -102,6 +118,9 @@ function createDepsForDownloadAndCacheFile() {
     existsSync: jest.fn(),
     copyFileSync: jest.fn(),
     createWriteStream: jest.fn(() => writer),
+    renameSync: jest.fn(),
+    unlinkSync: jest.fn(),
+    statSync: jest.fn(() => ({ size: 100 })),
     axiosRequest: jest.fn(async () => ({ data: readable })),
   };
 
@@ -110,6 +129,7 @@ function createDepsForDownloadAndCacheFile() {
     writer,
     writerHandlers,
     readable,
+    readableHandlers,
   };
 }
 
@@ -122,10 +142,18 @@ describe("ifarchive-extensions", () => {
     readdirSync.mockReset();
     copyFileSync.mockReset();
     createReadStream.mockReset();
+    renameSync.mockReset();
+    mkdirSync.mockReset();
+    mkdtempSync.mockReset();
+    rmSync.mockReset();
+    unlinkSync.mockReset();
+    statSync.mockReset();
     ensureDirSync.mockReset();
-    Extract.mockReset();
+    Open.file.mockReset();
 
-    Extract.mockImplementation((opts: any) => ({ __extractTarget: opts.path }));
+    statSync.mockReturnValue({ size: 100 });
+    mkdtempSync.mockImplementation((prefix: string) => `${prefix}test`);
+    Open.file.mockResolvedValue({ files: [] });
     createReadStream.mockImplementation(() => {
       const handlers: Record<string, (...args: any[]) => void> = {};
       return {
@@ -139,7 +167,7 @@ describe("ifarchive-extensions", () => {
     });
 
     workspace.getConfiguration.mockReturnValue({
-      get: jest.fn(() => "https://example.com/contrib/"),
+      get: jest.fn(() => "https://ifarchive.org/contrib/"),
       update: jest.fn(),
     });
     extensionState.isUsingTads2 = false;
@@ -169,11 +197,24 @@ describe("ifarchive-extensions", () => {
     expect(parsed.get("bar.t")).toBe("Desc two");
   });
 
+  test("parseIfArchiveIndex excludes traversal entries", () => {
+    const parsed = parseIfArchiveIndex("#../escape.zip\nBad#safe.zip\nGood");
+
+    expect([...parsed.keys()]).toEqual(["safe.zip"]);
+  });
+
+  for (const fileName of ["../escape.zip", "..\\escape.zip", "/tmp/escape.zip", "C:\\escape.zip", "bad\0.zip"]) {
+    test(`rejects unsafe archive filename ${JSON.stringify(fileName)}`, () => {
+      expect(() => validateArchiveFileName(fileName)).toThrow("Unsafe archive filename");
+      expect(() => resolveContainedFile("/project", fileName)).toThrow();
+    });
+  }
+
   test("downloadAndCacheFile reuses cached file when available", async () => {
     const { deps } = createDepsForDownloadAndCacheFile();
     deps.existsSync.mockReturnValue(true);
 
-    await downloadAndCacheFile("https://x/y.zip", "/project", "y.zip", "/cache", deps as any);
+    await downloadAndCacheFile("https://ifarchive.org/y.zip", "/project", "y.zip", "/cache", deps as any);
 
     expect(deps.ensureDirSync).toHaveBeenCalledWith("/cache");
     expect(deps.copyFileSync).toHaveBeenCalledWith("/cache/y.zip", "/project/y.zip");
@@ -181,19 +222,57 @@ describe("ifarchive-extensions", () => {
     expect(client.info).toHaveBeenCalledWith("Reusing cached file /cache/y.zip");
   });
 
+  test("downloadAndCacheFile rejects plaintext HTTP before filesystem access", async () => {
+    const { deps } = createDepsForDownloadAndCacheFile();
+
+    await expect(downloadAndCacheFile("http://x/y.zip", "/project", "y.zip", "/cache", deps as any)).rejects.toThrow(
+      "trusted https://ifarchive.org origin",
+    );
+    expect(deps.createWriteStream).not.toHaveBeenCalled();
+    expect(deps.axiosRequest).not.toHaveBeenCalled();
+  });
+
+  test("downloadAndCacheFile rejects an untrusted HTTPS origin before filesystem access", async () => {
+    const { deps } = createDepsForDownloadAndCacheFile();
+
+    await expect(
+      downloadAndCacheFile("https://attacker.example/y.zip", "/project", "y.zip", "/cache", deps as any),
+    ).rejects.toThrow("trusted https://ifarchive.org origin");
+    expect(deps.createWriteStream).not.toHaveBeenCalled();
+    expect(deps.axiosRequest).not.toHaveBeenCalled();
+  });
+
+  test("downloadAndCacheFile rejects oversized responses before creating a file", async () => {
+    const { deps, readable } = createDepsForDownloadAndCacheFile();
+    deps.existsSync.mockReturnValue(false);
+    deps.axiosRequest.mockResolvedValueOnce({
+      data: readable,
+      headers: { "content-length": String(26 * 1024 * 1024) },
+    } as any);
+
+    await expect(downloadAndCacheFile("https://ifarchive.org/y.zip", "/project", "y.zip", "/cache", deps as any)).rejects.toThrow(
+      "Archive exceeds",
+    );
+    expect(deps.createWriteStream).not.toHaveBeenCalled();
+  });
+
   test("downloadAndCacheFile downloads and stores file when cache is missing", async () => {
     const { deps, writerHandlers, readable } = createDepsForDownloadAndCacheFile();
     deps.existsSync.mockReturnValue(false);
 
-    const downloadPromise = downloadAndCacheFile("https://x/z.zip", "/project", "z.zip", "/cache", deps as any);
+    const downloadPromise = downloadAndCacheFile("https://ifarchive.org/z.zip", "/project", "z.zip", "/cache", deps as any);
 
     await Promise.resolve();
 
-    expect(deps.axiosRequest).toHaveBeenCalledWith({ method: "get", url: "https://x/z.zip", responseType: "stream" });
+    expect(deps.axiosRequest).toHaveBeenCalledWith(expect.objectContaining({
+      method: "get", url: "https://ifarchive.org/z.zip", responseType: "stream", maxRedirects: 0,
+    }));
     expect(readable.pipe).toHaveBeenCalledTimes(1);
     writerHandlers.close();
     await downloadPromise;
 
+    expect(deps.createWriteStream).toHaveBeenCalledWith("/project/z.zip.part", { flags: "wx" });
+    expect(deps.renameSync).toHaveBeenCalledWith("/project/z.zip.part", "/project/z.zip");
     expect(deps.copyFileSync).toHaveBeenCalledWith("/project/z.zip", "/cache/z.zip");
     expect(client.info).toHaveBeenCalledWith('Download of z.zip to folder "/project" is completed');
   });
@@ -202,13 +281,13 @@ describe("ifarchive-extensions", () => {
     const { deps, writerHandlers } = createDepsForDownloadAndCacheFile();
     deps.existsSync.mockReturnValue(false);
 
-    const downloadPromise = downloadAndCacheFile("https://x/w.zip", "/project", "w.zip", "/cache", deps as any);
+    const downloadPromise = downloadAndCacheFile("https://ifarchive.org/w.zip", "/project", "w.zip", "/cache", deps as any);
 
     await Promise.resolve();
 
     const streamError = new Error("stream failed");
     writerHandlers.error(streamError);
-    await downloadPromise;
+    await expect(downloadPromise).rejects.toThrow("stream failed");
 
     expect(deps.copyFileSync).toHaveBeenCalledTimes(0);
     expect(client.error).toHaveBeenCalledWith("stream failed");
@@ -264,11 +343,13 @@ describe("ifarchive-extensions", () => {
         throw new Error("network fail");
       }),
       createWriteStream: jest.fn(() => ({ on: jest.fn(), close: jest.fn() })),
+      renameSync: jest.fn(),
+      unlinkSync: jest.fn(),
+      statSync: jest.fn(() => ({ size: 100 })),
       ensureDirSync: jest.fn(),
       existsSync: jest.fn(() => false),
       showErrorMessage: jest.fn(),
-      createReadStream: jest.fn(() => ({ on: jest.fn(), pipe: jest.fn() })),
-      extract: jest.fn(),
+      openZipFile: jest.fn(async () => ({ files: [], extract: jest.fn() })),
       copyFileSync: jest.fn(),
       readdirSync: jest.fn(),
       getConfiguration: workspace.getConfiguration,
@@ -279,8 +360,8 @@ describe("ifarchive-extensions", () => {
 
     await downloadAndInstallExtension({} as any, runtime as any);
 
-    expect(runtime.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining("Download failed for https://example.com/contrib/bad.zip"));
-    expect(client.error).toHaveBeenCalledWith(expect.stringContaining("Download failed for https://example.com/contrib/bad.zip"));
+    expect(runtime.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining("Download failed for https://ifarchive.org/contrib/bad.zip"));
+    expect(client.error).toHaveBeenCalledWith(expect.stringContaining("Download failed for https://ifarchive.org/contrib/bad.zip"));
   });
 
   test("online install unzips .zip extension on successful download", async () => {
@@ -295,20 +376,24 @@ describe("ifarchive-extensions", () => {
         return writer;
       }),
       close: jest.fn(),
+      destroy: jest.fn(),
     };
     const readable = {
       pipe: jest.fn(() => {
         Promise.resolve().then(() => writerHandlers.close?.());
       }),
+      on: jest.fn(() => readable),
     };
 
     const runtime = {
       axiosRequest: jest.fn(async () => ({ data: readable })),
       createWriteStream: jest.fn(() => writer),
+      renameSync: jest.fn(),
+      unlinkSync: jest.fn(),
+      statSync: jest.fn(() => ({ size: 100 })),
       ensureDirSync: jest.fn(),
       existsSync: jest.fn(() => false),
-      createReadStream: jest.fn(() => ({ on: jest.fn(), pipe: jest.fn() })),
-      extract: jest.fn(() => ({})),
+      openZipFile: jest.fn(async () => ({ files: [], extract: jest.fn() })),
       copyFileSync: jest.fn(),
       readdirSync: jest.fn(),
       showErrorMessage: jest.fn(),
@@ -320,7 +405,7 @@ describe("ifarchive-extensions", () => {
 
     await downloadAndInstallExtension({} as any, runtime as any);
 
-    expect(runtime.createReadStream).toHaveBeenCalledWith("/project/good.zip");
+    expect(runtime.openZipFile).toHaveBeenCalledWith("/project/good.zip");
     expect(client.info).toHaveBeenCalledWith("Unzipping good.zip to /project/good");
   });
 
@@ -332,6 +417,7 @@ describe("ifarchive-extensions", () => {
         return writer;
       }),
       close: jest.fn(),
+      destroy: jest.fn(),
     };
 
     const { createWriteStream } = require("fs");
@@ -348,9 +434,11 @@ describe("ifarchive-extensions", () => {
       };
     });
 
-    await downloadAndCacheFile("https://example.com/default.zip", "/project", "default.zip", "/cache");
+    await downloadAndCacheFile("https://ifarchive.org/default.zip", "/project", "default.zip", "/cache");
 
-    expect(axios.request).toHaveBeenCalledWith({ method: "get", url: "https://example.com/default.zip", responseType: "stream" });
+    expect(axios.request).toHaveBeenCalledWith(expect.objectContaining({
+      method: "get", url: "https://ifarchive.org/default.zip", responseType: "stream", maxRedirects: 0,
+    }));
   });
 
   test("performLocalExtensionInstallation copies cached files and unzips zip archives", async () => {
@@ -358,8 +446,8 @@ describe("ifarchive-extensions", () => {
       showQuickPick: jest.fn(async () => ["one.zip", "two.t"]),
       existsSync: jest.fn((targetPath: string) => targetPath === "/cache/one.zip" || targetPath === "/cache/two.t"),
       copyFileSync: jest.fn(),
-      createReadStream: jest.fn(() => ({ on: jest.fn(), pipe: jest.fn() })),
-      extract: jest.fn(() => ({})),
+      statSync: jest.fn(() => ({ size: 100 })),
+      openZipFile: jest.fn(async () => ({ files: [], extract: jest.fn() })),
       ensureDirSync: jest.fn(),
     };
     const localState: any = {
@@ -372,38 +460,105 @@ describe("ifarchive-extensions", () => {
 
     expect(runtime.copyFileSync).toHaveBeenCalledWith("/cache/one.zip", "/project/one.zip");
     expect(runtime.copyFileSync).toHaveBeenCalledWith("/cache/two.t", "/project/two.t");
-    expect(runtime.createReadStream).toHaveBeenCalledWith("/project/one.zip");
-    expect(runtime.createReadStream).not.toHaveBeenCalledWith("/project/two.t");
+    expect(runtime.openZipFile).toHaveBeenCalledWith("/project/one.zip");
+    expect(runtime.openZipFile).not.toHaveBeenCalledWith("/project/two.t");
   });
 
-  test("unzipFromFiletoFolder wires stream extraction pipeline", () => {
-    unzipFromFiletoFolder("/tmp/sample.zip", "/tmp/out");
-
-    expect(ensureDirSync).toHaveBeenCalledWith("/tmp/out");
-    expect(createReadStream).toHaveBeenCalledWith("/tmp/sample.zip");
-
-    const stream = createReadStream.mock.results[0].value;
-    const openHandler = stream.__handlers.open;
-    expect(openHandler).toBeDefined();
-
-    openHandler();
-
-    expect(Extract).toHaveBeenCalledWith({ path: "/tmp/out" });
-    expect(stream.pipe).toHaveBeenCalledWith(expect.objectContaining({ __extractTarget: "/tmp/out" }));
-  });
-
-  test("unzipFromFiletoFolder logs setup errors from createReadStream", () => {
-    const failingRuntime = {
+  test("unzipFromFiletoFolder validates entries before extraction", async () => {
+    const runtime = {
+      statSync: jest.fn(() => ({ size: 100 })),
+      existsSync: jest.fn(() => false),
       ensureDirSync: jest.fn(),
-      createReadStream: jest.fn(() => {
-        throw new Error("cannot open zip");
-      }),
-      extract: jest.fn(),
+      mkdtempSync: jest.fn(() => "/tmp/out.partial-test"),
+      mkdirSync: jest.fn(),
+      createWriteStream: jest.fn(() => new Writable({ write(_chunk, _encoding, callback) { callback(); } })),
+      renameSync: jest.fn(),
+      rmSync: jest.fn(),
+      openZipFile: jest.fn(async () => ({
+        files: [{ path: "lib/source.t", type: "File", vars: { uncompressedSize: 50 }, stream: () => Readable.from(["source"]) }],
+      })),
     };
 
-    unzipFromFiletoFolder("/tmp/bad.zip", "/tmp/out", failingRuntime as any);
+    await unzipFromFiletoFolder("/tmp/sample.zip", "/tmp/out", runtime as any);
+
+    expect(runtime.renameSync).toHaveBeenCalledWith("/tmp/out.partial-test", "/tmp/out");
+    expect(runtime.createWriteStream).toHaveBeenCalledWith(
+      "/tmp/out.partial-test/lib/source.t",
+      { flags: "wx", mode: 0o600 },
+    );
+  });
+
+  test("unzipFromFiletoFolder refuses an existing extraction destination", async () => {
+    const runtime = {
+      statSync: jest.fn(() => ({ size: 100 })),
+      existsSync: jest.fn(() => true),
+      openZipFile: jest.fn(async () => ({ files: [] })),
+    };
+
+    await expect(unzipFromFiletoFolder("/tmp/sample.zip", "/tmp/out", runtime as any)).rejects.toThrow(
+      "Refusing to extract over an existing path",
+    );
+  });
+
+  test("unzipFromFiletoFolder enforces expanded size while streaming", async () => {
+    const megabyte = Buffer.alloc(1024 * 1024);
+    const runtime = {
+      statSync: jest.fn(() => ({ size: 100 })),
+      existsSync: jest.fn(() => false),
+      ensureDirSync: jest.fn(),
+      mkdtempSync: jest.fn(() => "/tmp/out.partial-test"),
+      mkdirSync: jest.fn(),
+      createWriteStream: jest.fn(() => new Writable({ write(_chunk, _encoding, callback) { callback(); } })),
+      renameSync: jest.fn(),
+      rmSync: jest.fn(),
+      openZipFile: jest.fn(async () => ({
+        files: [{
+          path: "large.t",
+          type: "File",
+          vars: { uncompressedSize: 1 },
+          stream: () => Readable.from(Array.from({ length: 101 }, () => megabyte)),
+        }],
+      })),
+    };
+
+    await expect(unzipFromFiletoFolder("/tmp/large.zip", "/tmp/out", runtime as any)).rejects.toThrow(
+      "Expanded archive exceeds",
+    );
+    expect(runtime.rmSync).toHaveBeenCalledWith("/tmp/out.partial-test", { recursive: true, force: true });
+    expect(runtime.renameSync).not.toHaveBeenCalled();
+  });
+
+  test("unzipFromFiletoFolder rejects archive traversal entries", async () => {
+    const failingRuntime = {
+      statSync: jest.fn(() => ({ size: 100 })),
+      ensureDirSync: jest.fn(),
+      openZipFile: jest.fn(async () => ({
+        files: [{ path: "../escape.t", vars: { uncompressedSize: 10 } }],
+        extract: jest.fn(),
+      })),
+    };
+
+    await expect(unzipFromFiletoFolder("/tmp/bad.zip", "/tmp/out", failingRuntime as any)).rejects.toThrow(
+      "Unsafe path in archive",
+    );
 
     expect(client.error).toHaveBeenCalledWith(expect.stringContaining("Setting up readstream for /tmp/bad.zip failed"));
+  });
+
+  test("unzipFromFiletoFolder rejects excessive expanded size", async () => {
+    const runtime = {
+      statSync: jest.fn(() => ({ size: 100 })),
+      ensureDirSync: jest.fn(),
+      openZipFile: jest.fn(async () => ({
+        files: [{ path: "large.t", vars: { uncompressedSize: 101 * 1024 * 1024 } }],
+        extract: jest.fn(),
+      })),
+    };
+
+    await expect(unzipFromFiletoFolder("/tmp/large.zip", "/tmp/out", runtime as any)).rejects.toThrow(
+      "Expanded archive exceeds",
+    );
+    expect(runtime.ensureDirSync).not.toHaveBeenCalled();
   });
 	
 });

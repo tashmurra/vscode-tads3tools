@@ -32,12 +32,14 @@ import {
   UNKNOWN,
 } from '../parser/Tads3v2AstEvaluator';
 import { BlockNode } from '../parser/ast/nodes';
+import { MAX_INLINE_PARSE_INPUT_CHARS } from './parse-limits';
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
 export function evaluateSelection(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return '(empty selection)';
+  if (trimmed.length > MAX_INLINE_PARSE_INPUT_CHARS) return '(selection is too large to evaluate safely)';
 
   // 1. Try as expression
   const exprResult = tryEvalExpr(trimmed);

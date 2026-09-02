@@ -178,7 +178,7 @@ function extractAndStoreLargestAutoScriptSerialNumber(fname: string) {
   }
 }
 
-async function findAndStartGameFile(interpreterOptions = "") {
+async function findAndStartGameFile(interpreterOptions: string[] = []) {
   const files = await workspace.findFiles(`**/*.t3`);
   if (files && (await files).length > 0) {
     if (files.length === 1) {

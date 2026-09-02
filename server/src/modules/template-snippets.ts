@@ -16,6 +16,7 @@ import { Tads3v2Parser } from '../parser/Tads3v2Parser';
 import { Tads3v2AstVisitor } from '../parser/Tads3v2AstVisitor';
 import { TemplateDeclNode, TemplateItemNode } from '../parser/ast/nodes';
 import { createSnippetsFromTemplateItems } from './text-utils';
+import { MAX_INLINE_PARSE_INPUT_CHARS } from './parse-limits';
 
 /**
  * Parse `source` as a TADS3 template declaration and return snippet strings.
@@ -33,6 +34,7 @@ export function createTemplateSnippetStrings(
 }
 
 function parseTemplateDeclaration(source: string): TemplateItemNode[] {
+  if (source.length > MAX_INLINE_PARSE_INPUT_CHARS) return [];
   try {
     const lexer = new Tads3v2Lexer(CharStreams.fromString(source.trim()));
     lexer.removeErrorListeners();

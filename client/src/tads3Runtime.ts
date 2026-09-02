@@ -5,7 +5,9 @@
 import { EventEmitter } from "events";
 import { spawn, ChildProcess } from "child_process";
 import * as Net from "net";
-import { access, unlink } from "fs/promises";
+import { chmod, lstat, mkdtemp, rm } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
 import { debug } from "./log";
 import { FileAccessor } from "./types";
 import { TextDecoder, TextEncoder } from 'util';
@@ -76,6 +78,9 @@ export class Tads3Runtime extends EventEmitter {
   private _readyForBreakpoints: boolean = false;
   private _socketReadyRetries = 20;
   private _socketReadyDelayMs = 100;
+  private _socketDirectory?: string;
+  private static readonly MAX_DAP_MESSAGE_BYTES = 4 * 1024 * 1024;
+  private static readonly MAX_DAP_BUFFER_BYTES = 8 * 1024 * 1024;
 
   // Debug state
   private _breakPoints = new Map<string, IRuntimeBreakpoint[]>();
@@ -93,8 +98,6 @@ export class Tads3Runtime extends EventEmitter {
     frobdPath: string,
     stopOnEntry: boolean,
     dapMode: "socket" | "tcp" = "socket",
-    dapSocket: string = "/tmp/tads-dap.sock",
-    dapPort: number = 9876,
   ): Promise<void> {
     this._dapMode = dapMode;
     this._queueEnabled = true;
@@ -103,9 +106,9 @@ export class Tads3Runtime extends EventEmitter {
     debug("tads3Runtime.start - dapMode:", dapMode);
 
     if (dapMode === "socket") {
-      await this._startWithSocket(program, frobdPath, dapSocket, stopOnEntry);
+      await this._startWithSocket(program, frobdPath, stopOnEntry);
     } else {
-      await this._startWithTCP(program, frobdPath, dapPort, stopOnEntry);
+      throw new Error("TCP DAP mode is disabled because it cannot authenticate the local debugger peer");
     }
   }
 
@@ -115,22 +118,12 @@ export class Tads3Runtime extends EventEmitter {
   private async _startWithSocket(
     program: string,
     frobdPath: string,
-    socketPath: string,
     stopOnEntry: boolean,
   ): Promise<void> {
+    this._socketDirectory = await mkdtemp(join(tmpdir(), "tads-dap-"));
+    await chmod(this._socketDirectory, 0o700);
+    const socketPath = join(this._socketDirectory, "dap.sock");
     debug("Starting frobd with socket:", socketPath);
-
-    // Clean up any existing socket file
-    try {
-      await unlink(socketPath); // Remove existing socket file if it exists
-      debug("Removed existing socket file");
-    } catch (err: any) {
-      // It's normal for the socket file to not exist, so only log 
-      // other errors
-      if (err.code !== "ENOENT") {
-        console.log("[DEBUG] Socket file does not exist (OK)");
-      }
-    }
 
     // Spawn frobd with socket option
     try {
@@ -147,6 +140,7 @@ export class Tads3Runtime extends EventEmitter {
       ]);
     } catch (err) {
       console.error("[DEBUG] Failed to spawn frobd:", err);
+      await this._cleanupSocketDirectory();
       this.sendEvent("end");
       return;
     }
@@ -159,6 +153,7 @@ export class Tads3Runtime extends EventEmitter {
     // Handle process errors
     this._frobdProcess.on("error", (err) => {
       console.error("[DEBUG] frobd process error:", err);
+      void this._cleanupSocketDirectory();
       this.sendEvent("end");
     });
 
@@ -166,6 +161,7 @@ export class Tads3Runtime extends EventEmitter {
     this._frobdProcess.on("exit", (code) => {
       console.log("frobd exited with code:", code);
       this._socket?.destroy();
+      void this._cleanupSocketDirectory();
       this.sendEvent("end");
     });
 
@@ -198,8 +194,15 @@ export class Tads3Runtime extends EventEmitter {
     const socketReady = await this._waitForSocketReady(socketPath);
     if (!socketReady) {
       console.error("[DEBUG] Socket not ready after retries:", socketPath);
+      await this._stopFrobdProcess();
+      await this._cleanupSocketDirectory();
       this.sendEvent("end");
-      return;
+      throw new Error("frobd did not create its private DAP socket before the launch timeout");
+    }
+
+    if (!this._frobdProcess || this._frobdProcess.exitCode !== null) {
+      await this._cleanupSocketDirectory();
+      throw new Error("frobd exited before its private DAP socket became ready");
     }
 
     // Connect to frobd's socket
@@ -241,6 +244,22 @@ export class Tads3Runtime extends EventEmitter {
     });
   }
 
+  private async _stopFrobdProcess(): Promise<void> {
+    const child = this._frobdProcess;
+    if (!child || child.exitCode !== null) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve();
+      }, 2_000);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.kill();
+    });
+  }
+
   /**
    * Alllows sending input to frobd's stdin (when not in debug mode) - used by game console webview
    * @param input
@@ -254,9 +273,13 @@ export class Tads3Runtime extends EventEmitter {
   private async _waitForSocketReady(socketPath: string): Promise<boolean> {
     for (let attempt = 1; attempt <= this._socketReadyRetries; attempt++) {
       try {
-        await access(socketPath);
-        debug("Socket file exists:", socketPath);
-        return true;
+        const stats = await lstat(socketPath);
+        const ownedByCurrentUser = typeof process.getuid !== "function" || stats.uid === process.getuid();
+        if (stats.isSocket() && ownedByCurrentUser) {
+          debug("Private socket is ready:", socketPath);
+          return true;
+        }
+        return false;
       } catch {
         await new Promise((resolve) =>
           setTimeout(resolve, this._socketReadyDelayMs),
@@ -264,6 +287,14 @@ export class Tads3Runtime extends EventEmitter {
       }
     }
     return false;
+  }
+
+  private async _cleanupSocketDirectory(): Promise<void> {
+    const socketDirectory = this._socketDirectory;
+    this._socketDirectory = undefined;
+    if (socketDirectory) {
+      await rm(socketDirectory, { recursive: true, force: true });
+    }
   }
 
   /**
@@ -498,6 +529,12 @@ export class Tads3Runtime extends EventEmitter {
    */
   private _handleFrobdOutput(data: string): void {
     this._messageBuffer += data;
+    if (Buffer.byteLength(this._messageBuffer) > Tads3Runtime.MAX_DAP_BUFFER_BYTES) {
+      this._messageBuffer = "";
+      this._socket?.destroy(new Error("Debugger sent an oversized DAP buffer"));
+      this.sendEvent("end");
+      return;
+    }
 
     // Parse DAP messages (format: Content-Length: N\r\n\r\n{json})
     while (true) {
@@ -509,6 +546,12 @@ export class Tads3Runtime extends EventEmitter {
       }
 
       const contentLength = parseInt(headerMatch[1]);
+      if (!Number.isSafeInteger(contentLength) || contentLength > Tads3Runtime.MAX_DAP_MESSAGE_BYTES) {
+        this._messageBuffer = "";
+        this._socket?.destroy(new Error("Debugger sent an oversized DAP message"));
+        this.sendEvent("end");
+        return;
+      }
       const messageStart = headerMatch.index! + headerMatch[0].length;
       const messageEnd = messageStart + contentLength;
 
@@ -853,6 +896,7 @@ export class Tads3Runtime extends EventEmitter {
         this._socket.destroy();
         this._socket = undefined;
     }
+    void this._cleanupSocketDirectory();
 
     // Send event so we know to update UI and clean up state
     this.sendEvent("end");

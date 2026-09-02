@@ -445,15 +445,22 @@ export class TadsSymbolManager {
 
   findHeritage(name: string): string[] {
     const heritageStack: string[] = [];
+    const visited = new Set<string>();
     let ancestorName = this.inheritanceMap.get(name);
     heritageStack.push(name);
+    visited.add(name);
     if (ancestorName) {
+      if (visited.has(ancestorName)) {
+        return heritageStack;
+      }
       heritageStack.push(ancestorName);
+      visited.add(ancestorName);
       while (ancestorName && (ancestorName = this.inheritanceMap.get(ancestorName)) !== undefined) {
-        if (ancestorName === "__root__") {
+        if (ancestorName === "__root__" || visited.has(ancestorName)) {
           break;
         }
         heritageStack.push(ancestorName);
+        visited.add(ancestorName);
       }
     }
     return heritageStack;

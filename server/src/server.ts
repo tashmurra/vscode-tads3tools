@@ -3,7 +3,6 @@
 import { TextDocuments, SymbolKind } from "vscode-languageserver/node";
 
 import {
-  CancellationTokenSource,
   InitializeParams,
   TextDocumentSyncKind,
   InitializeResult,
@@ -146,8 +145,6 @@ connection.onInitialize((params: InitializeParams) => {
   return result;
 });
 
-export let abortParsingProcess: CancellationTokenSource | undefined;
-
 connection.onInitialized(() => {
   if (hasConfigurationCapability) {
     // Register for all configuration changes.
@@ -163,10 +160,6 @@ connection.onInitialized(() => {
       connection.console.debug("Workspace folder change event received.");
     });
   }
-
-  connection.onNotification("symbolparsing/abort", () => {
-    abortParsingProcess?.cancel();
-  });
 
   connection.onNotification("request/mapsymbols", (options: any) => {
     if (options?.reset) {
@@ -373,7 +366,7 @@ connection.onRequest("request/analyzeText/findNouns", async (params: any) => {
 
 connection.onRequest(
   "request/parseDocuments",
-  async ({ makefileLocation, filePaths, token }: any) => {
+  async ({ makefileLocation, filePaths }: any, token) => {
     serverState.tadsVersion = 3;
     await preprocessAndParseTads3Files(makefileLocation, filePaths, token);
   },
@@ -386,7 +379,7 @@ connection.onRequest("request/offsetSymbols", ({ filePath, line, offset }: any) 
 
 connection.onRequest(
   "request/parseTads2Documents",
-  async ({ mainFileLocation, filePaths, token }: any) => {
+  async ({ mainFileLocation, filePaths }: any, token) => {
     serverState.tadsVersion = 2;
     await preprocessAndParseTads2Files(mainFileLocation, filePaths, token);
   },

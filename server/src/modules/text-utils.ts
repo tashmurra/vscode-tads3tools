@@ -197,6 +197,9 @@ export function createSnippetsFromTemplateItems(
   items: TemplateItemNode[],
   inheritedSets: TemplateItemNode[][] = [],
 ): string[] {
+  if (items.length > MAX_TEMPLATE_ITEMS || inheritedSets.some((set) => set.length > MAX_TEMPLATE_ITEMS)) {
+    return [];
+  }
   const hasInherited = items.some(item => item.tokenKind === 'inherited');
 
   if (!hasInherited) {
@@ -219,7 +222,7 @@ export function createSnippetsFromTemplateItems(
     ? expandToSnippet(buildSnippetWords(items, [richestSet])).map(parts => parts.join(''))
     : [];
 
-  return [...new Set([...snippets1, ...snippets2])];
+  return [...new Set([...snippets1, ...snippets2])].slice(0, MAX_TEMPLATE_SNIPPETS);
 }
 
 interface SnippetVariant {
@@ -228,6 +231,9 @@ interface SnippetVariant {
   endSign: string;
   isOptional: boolean;
 }
+
+export const MAX_TEMPLATE_SNIPPETS = 256;
+export const MAX_TEMPLATE_ITEMS = 128;
 
 function itemToVariant(item: TemplateItemNode): SnippetVariant {
   const isOptional = item.optional;
@@ -293,6 +299,9 @@ function expandToSnippet(input: any[], skipPlaceHolderIndex = false): string[][]
   }
 
   function walk(index: number, current: string[], placeholderIndex = 1) {
+    if (result.length >= MAX_TEMPLATE_SNIPPETS) {
+      return;
+    }
     if (index === input.length) {
       result.push([...current]);
       return;
@@ -305,6 +314,7 @@ function expandToSnippet(input: any[], skipPlaceHolderIndex = false): string[][]
       // Alternative group: emit each variant in order.
       // If the group is optional, inject one "skip" branch after the first variant.
       for (let vi = 0; vi < variants.length; vi++) {
+        if (result.length >= MAX_TEMPLATE_SNIPPETS) break;
         if (vi === 1 && isGroupOptional) {
           walk(index + 1, current, placeholderIndex); // skip the whole group
         }

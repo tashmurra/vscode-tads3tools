@@ -134,6 +134,13 @@ describe("TadsSymbolManager test suite", () => {
       equal(result.length, 4);
       deepEqual(result, ["objectWithAncestors", "SuperType", "GrandSuperType", "GreatGrandSuperType"]);
     });
+
+    it("stops when inheritance contains a cycle", () => {
+      sm.inheritanceMap.set("CycleA", "CycleB");
+      sm.inheritanceMap.set("CycleB", "CycleA");
+
+      deepEqual(sm.findHeritage("CycleA"), ["CycleA", "CycleB"]);
+    });
   });
 
   describe("findHeritage", () => {

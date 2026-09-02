@@ -61,7 +61,7 @@ describe("validations", () => {
     );
 
     expect(await validateCompilerPath("${workspaceFolder}/tools/t3make")).toBeTruthy();
-    expect(runCommand).toHaveBeenCalledWith('"/path/to/project/tools/t3make"');
+    expect(runCommand).toHaveBeenCalledWith("/path/to/project/tools/t3make");
   });
 
   test("validateCompilerPath with wrong path resulting empty string fails validation", async () => {

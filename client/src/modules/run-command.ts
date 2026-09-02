@@ -1,19 +1,15 @@
-import { exec } from "child_process";
+import { execFile } from "child_process";
 
-export function runCommand(command: string) {
-  return new Promise((resolve, reject) => {
-    let result = "";
-    const childProcess = exec(command);
-    try {
-      childProcess.stdout.on("data", (data: any) => {
-        result += data;
-      });
-      childProcess.on("close", function () {
-        resolve(result);
-      });
-    } catch (error) {
-      reject(error);
-    }
-    return result;
+const COMMAND_TIMEOUT_MS = 120_000;
+const MAX_COMMAND_OUTPUT_BYTES = 50 * 1024 * 1024;
+
+export function runCommand(executable: string, args: readonly string[] = []): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(
+      executable,
+      [...args],
+      { encoding: "utf8", maxBuffer: MAX_COMMAND_OUTPUT_BYTES, timeout: COMMAND_TIMEOUT_MS },
+      (_error, stdout) => resolve(stdout ?? ""),
+    );
   });
 }

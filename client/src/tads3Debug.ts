@@ -448,8 +448,6 @@ export class Tads3DebugSession extends LoggingDebugSession {
     // Start frobd FIRST so it's ready to receive breakpoints during configuration phase
     const frobdPath = args.frobd || "frobd";
     const dapMode = args.dapMode || "socket"; // Default to socket mode
-    const dapSocket = args.dapSocket || "/tmp/tads-dap.sock";
-    const dapPort = args.dapPort || 9876;
 
     let resolvedFrobdPath = frobdPath;
 
@@ -479,14 +477,12 @@ export class Tads3DebugSession extends LoggingDebugSession {
 
     await vscode.commands.executeCommand("tads3dbg.clearWebview");
     try {
-      console.log("Trying to start frobd with parameters:", { args, resolvedFrobdPath, dapMode, dapSocket, dapPort });
+      console.log("Trying to start frobd with parameters:", { args, resolvedFrobdPath, dapMode });
       await this._runtime.start(
         args.program,
         resolvedFrobdPath,
         !!args.stopOnEntry,
         dapMode,
-        dapSocket,
-        dapPort,
       );
     } catch (error) {
       console.error("Error starting frobd:", error);

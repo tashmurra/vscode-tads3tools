@@ -125,8 +125,14 @@ export async function diagnose(textDocument: TextDocument, collection, extension
     const tads2libraryPath = tads2ExtensionConfig?.library?.path ?? "/usr/local/share/frobtads/tads2/";
     const mainFilePath = extensionState.getTads2MainFile().fsPath;
     const projectBaseFolder = dirname(mainFilePath);
-    const commandLine = `"${compilerPath}" -i "${tads2libraryPath}" -i "${projectBaseFolder}" -ds "${mainFilePath}"`;
-    const resultOfCompilation = await runCommand(commandLine);
+    const resultOfCompilation = await runCommand(compilerPath, [
+      "-i",
+      tads2libraryPath,
+      "-i",
+      projectBaseFolder,
+      "-ds",
+      mainFilePath,
+    ]);
     const errorDiagnosticsResult = parseDiagnostics(resultOfCompilation.toString(), textDocument, 2, collection);
     extensionState.setDiagnosing(false);
     return errorDiagnosticsResult;
@@ -137,9 +143,12 @@ export async function diagnose(textDocument: TextDocument, collection, extension
   ensureObjFolderExistsInProjectRoot(extensionState);
   const tads3ExtensionConfig = workspace.getConfiguration("tads3"); // TODO: add configuration
   const compilerPath = expandWorkspaceFolder(tads3ExtensionConfig?.compiler?.path ?? "t3make"); // TODO: add configuration
-  const resultOfCompilation = await runCommand(
-    `"${compilerPath}" -nobanner -q -f "${extensionState.getChosenMakefileUri().fsPath}"`,
-  );
+  const resultOfCompilation = await runCommand(compilerPath, [
+    "-nobanner",
+    "-q",
+    "-f",
+    extensionState.getChosenMakefileUri().fsPath,
+  ]);
   const errorDiagnostics = parseDiagnostics(resultOfCompilation.toString(), textDocument, 3, collection);
   extensionState.setDiagnosing(false);
   return errorDiagnostics;

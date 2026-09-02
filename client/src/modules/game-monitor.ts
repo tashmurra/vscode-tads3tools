@@ -3,6 +3,33 @@ import { workspace, RelativePattern, window } from "vscode";
 import { debounceTime } from "rxjs";
 import { client, runGameInTerminalSubject, DEBOUNCE_TIME, findImageByPattern } from "../extension";
 
+export function parseInterpreterCommand(command: string): { executable: string; args: string[] } {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+
+  for (const character of command.trim()) {
+    if (quote) {
+      if (character === quote) quote = undefined;
+      else current += character;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (/\s/.test(character)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+    } else {
+      current += character;
+    }
+  }
+  if (quote) throw new Error("Interpreter setting contains an unmatched quote");
+  if (current) tokens.push(current);
+  if (tokens.length === 0) throw new Error("Interpreter setting is empty");
+
+  return { executable: tokens[0], args: tokens.slice(1) };
+}
+
 export function setupAndMonitorBinaryGamefileChanges(extensionState: any, imageFormat: string): void {
   if (!extensionState.getUsingTads2() && extensionState.imageInfoProvider) {
     findImageByPattern(false).then((filepath) => {
@@ -42,9 +69,10 @@ export function setupAndMonitorBinaryGamefileChanges(extensionState: any, imageF
     const enableScriptFiles: boolean = configuration.get("enableScriptFiles");
     const gameRunnerInterpreter: string = configuration.get("gameRunnerInterpreter") ?? "";
     const logToFileEnabled = process.platform === "win32" && gameRunnerInterpreter.match("t3run.exe");
-    const logToFileOption =
-      enableScriptFiles && logToFileEnabled ? `-o "scripts/Auto ${extensionState.autoScriptFileSerial + 1}.cmd"` : "";
-    startGameWithInterpreter(event.fsPath, logToFileOption);
+    const interpreterArgs = enableScriptFiles && logToFileEnabled
+      ? ["-o", `scripts/Auto ${extensionState.autoScriptFileSerial + 1}.cmd`]
+      : [];
+    startGameWithInterpreter(event.fsPath, interpreterArgs);
   });
 
   gameFileSystemWatcher.onDidChange((event) => runGameInTerminalSubject.next(event));
@@ -63,26 +91,35 @@ export function closeAllTerminalsNamed(name: string) {
   }
 }
 
-export function startGameWithInterpreter(filepath: string, interpreterArgs = ""): void {
+export function startGameWithInterpreter(filepath: string, interpreterArgs: string[] = []): void {
   const configuration = workspace.getConfiguration("tads3");
-  const interpreter = configuration.get("gameRunnerInterpreter");
+  const interpreter: string | undefined = configuration.get("gameRunnerInterpreter");
 
   if (!interpreter) {
     window.showErrorMessage(`Interpreter setting missing. Examine setting tads3.gameRunnerInterpreter`);
     return;
   }
 
-  const fileBaseName = `"${basename(filepath)}"`;
+  let interpreterCommand: { executable: string; args: string[] };
+  try {
+    interpreterCommand = parseInterpreterCommand(interpreter);
+  } catch (error) {
+    window.showErrorMessage(`Invalid interpreter setting: ${error}`);
+    return;
+  }
+  const fileBaseName = basename(filepath);
   closeAllTerminalsNamed("Tads3 Game runner terminal");
 
-  const gameRunnerTerminal = window.createTerminal("Tads3 Game runner terminal");
+  const gameRunnerTerminal = window.createTerminal({
+    name: "Tads3 Game runner terminal",
+    shellPath: interpreterCommand.executable,
+    shellArgs: [...interpreterCommand.args, ...interpreterArgs, fileBaseName],
+    cwd: dirname(filepath),
+  });
   client.info(`${filepath} changed, restarting ${fileBaseName} in game runner terminal`);
 
   // FIXME: preserveFocus doesn't work, the terminal takes focus anyway (might be because of sendText)
   gameRunnerTerminal.show(true);
-  const commandLine = `${interpreter} ${interpreterArgs} ${fileBaseName}`;
-  gameRunnerTerminal.sendText(commandLine);
-
   // FIXME: Interim hack to make preserveFocus work even when there's a slow startup of the interpreter
   // (This won't always work, especially on a slow machine)
   const documentWorkingOn = window.activeTextEditor.document;

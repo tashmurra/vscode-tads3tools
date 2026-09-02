@@ -19,6 +19,10 @@ const window = {
   showErrorMessage: jest.fn(),
   showOpenDialog: jest.fn(),
   showQuickPick: jest.fn(),
+  showTextDocument: jest.fn(),
+  createTerminal: jest.fn(),
+  terminals: [],
+  activeTextEditor: { document: {} },
 };
 const workspace = {
   workspaceFolders: undefined,

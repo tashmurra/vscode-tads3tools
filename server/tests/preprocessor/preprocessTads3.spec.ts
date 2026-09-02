@@ -31,33 +31,15 @@ function countMatches(lines: string[], pattern: RegExp): number {
 }
 
 /**
- * Mocks t3make preprocessor output by intercepting child_process.exec calls and emitting the provided output string as stdout, followed by a close event. 
+ * Mocks t3make preprocessor output at the shell-free execFile boundary.
  */
 function mockExecWithOutput(output: string) {
-  return jest.spyOn(childProcess, "exec").mockImplementation(() => {
-    let stdoutDataHandler: ((data: string) => void) | undefined;
-    let closeHandler: (() => void) | undefined;
-
-    const child = {
-      stdout: {
-        on: (event: string, cb: (data: string) => void) => {
-          if (event === "data") stdoutDataHandler = cb;
-          return child.stdout;
-        },
-      },
-      on: (event: string, cb: () => void) => {
-        if (event === "close") closeHandler = cb;
-        return child;
-      },
-    } as any;
-
+  return jest.spyOn(childProcess, "execFile").mockImplementation(((_file: any, _args: any, _options: any, callback: any) => {
     process.nextTick(() => {
-      stdoutDataHandler?.(output);
-      closeHandler?.();
+      callback(null, output, "");
     });
-
-    return child;
-  });
+    return {} as any;
+  }) as any);
 }
 
 // ── preprocessTads3Files regression tests ───────────────────────────────────

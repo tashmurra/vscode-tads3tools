@@ -1,5 +1,5 @@
 /* eslint-disable no-useless-escape */
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { readFile, readFileSync } from "fs";
 import { URI } from "vscode-uri";
 import { CaseInsensitiveSet } from "../modules/CaseInsensitiveSet";
@@ -39,18 +39,34 @@ export function markFileToBeCheckedForMacroDefinitions(uri: string) {
   macrosChecked.delete(uri);
 }
 
-export function runCommand(command: string): Promise<string> {
+const COMMAND_TIMEOUT_MS = 120_000;
+const MAX_COMMAND_OUTPUT_BYTES = 50 * 1024 * 1024;
+
+export function runCommand(
+  executable: string,
+  args: readonly string[] = [],
+  isCancelled: () => boolean = () => false,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    let result = "";
-    const childProcess = exec(command, { maxBuffer: 1024 * 50000 });
-    try {
-      childProcess?.stdout?.on("data", (data: string) => {
-        result += data;
-      });
-      childProcess.on("close", () => resolve(result));
-    } catch (error) {
-      reject(error);
-    }
+    let settled = false;
+    let cancellationCheck: NodeJS.Timeout | undefined;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (cancellationCheck) clearInterval(cancellationCheck);
+      callback();
+    };
+    const child = execFile(
+      executable,
+      [...args],
+      { encoding: "utf8", maxBuffer: MAX_COMMAND_OUTPUT_BYTES, timeout: COMMAND_TIMEOUT_MS },
+      (error, stdout) => finish(() => error ? reject(error) : resolve(stdout ?? "")),
+    );
+    cancellationCheck = setInterval(() => {
+      if (!isCancelled()) return;
+      child.kill();
+      finish(() => reject(new Error(`CANCELLED while preprocessing with ${executable}`)));
+    }, 50);
   });
 }
 
@@ -58,12 +74,12 @@ export async function preprocessTads3Files(
   chosenMakefilePath: string,
   preprocessedFilesCacheMap: PreprocessedCache,
   t3makeCompilerPath = "t3make",
-  connection?: any
+  connection?: any,
+  isCancelled: () => boolean = () => false,
 ) {
   preprocessedFilesCacheMap.clear();
   rowsMap.clear();
-  const commandLine = `"${t3makeCompilerPath}" -P -w0 -q -f "${chosenMakefilePath}"`;
-  const result = await runCommand(commandLine);
+  const result = await runCommand(t3makeCompilerPath, ["-P", "-w0", "-q", "-f", chosenMakefilePath], isCancelled);
   if (result.match(/unable to open/i)) {
     throw new Error(`Preprocessing failed: ${result}`);
   }
@@ -77,15 +93,18 @@ export async function preprocessTads2Files(
   preprocessedFilesCacheMap: PreprocessedCache,
   t2PreprocessorPath = "t3make",
   libFolders: string[] = ["/usr/local/share/frobtads/tads2/"],
-  connection?: any
+  connection?: any,
+  isCancelled: () => boolean = () => false,
 ) {
   preprocessedFilesCacheMap.clear();
   rowsMap.clear();
-  const includes = [libFolders, require("path").dirname(chosenMainfilePath)]
-    .map((x) => `-I "${x}"`)
-    .join(" ");
-  const commandLine = `${t2PreprocessorPath} -w0 ${includes} -P -q "${chosenMainfilePath}"`;
-  const result = await runCommand(commandLine);
+  const includeFolders = [...libFolders, require("path").dirname(chosenMainfilePath)];
+  const includes = includeFolders.flatMap((folder) => ["-I", folder]);
+  const result = await runCommand(
+    t2PreprocessorPath,
+    ["-w0", ...includes, "-P", "-q", chosenMainfilePath],
+    isCancelled,
+  );
   if (result.match(/unable to open/i)) {
     throw new Error(`Preprocessing failed: ${result}`);
   }

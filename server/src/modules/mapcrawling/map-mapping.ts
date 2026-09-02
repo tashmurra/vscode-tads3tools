@@ -191,12 +191,14 @@ export default class MapObjectManager {
     return classList;
   }
 
-  craftClassInheritanceArray(derivedClassName: string, collection: string[] = []) {
+  craftClassInheritanceArray(derivedClassName: string, collection: string[] = [], visited = new Set<string>()) {
     try {
+      if (visited.has(derivedClassName)) return;
+      visited.add(derivedClassName);
       const superClass = this.symbolManager.inheritanceMap.get(derivedClassName);
-      if (superClass && superClass.length > 0 && superClass !== "__root__") {
+      if (superClass && superClass.length > 0 && superClass !== "__root__" && !visited.has(superClass)) {
         collection.push(superClass);
-        this.craftClassInheritanceArray(superClass, collection);
+        this.craftClassInheritanceArray(superClass, collection, visited);
       }
     } catch (err) {
       console.error("err!");
@@ -209,14 +211,16 @@ export default class MapObjectManager {
    * @param className - the particular class you want to check the derived class against
    * @returns True if so, false otherwise
    */
-  inheritesFrom(derivedClassName: string, className: string) {
+  inheritesFrom(derivedClassName: string, className: string, visited = new Set<string>()) {
     const classInheritanceMap = this.symbolManager.inheritanceMap;
     try {
       if (className === derivedClassName) {
         return true;
       }
+      if (visited.has(derivedClassName)) return false;
+      visited.add(derivedClassName);
       const superClass = classInheritanceMap.get(derivedClassName);
-      if (superClass && this.inheritesFrom(superClass, className)) {
+      if (superClass && this.inheritesFrom(superClass, className, visited)) {
         return true;
       }
     } catch (err) {

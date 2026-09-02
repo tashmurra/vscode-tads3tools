@@ -5,6 +5,7 @@ import { wholeLineRegExp } from "../parser/preprocessor";
 import { ShallowParser } from "./ShallowParser";
 import { URI } from "vscode-uri";
 import { serverState } from "../state";
+import { MAX_INLINE_PARSE_INPUT_CHARS } from "./parse-limits";
 
 export function onDocumentFormatting(
   handler: DocumentFormattingParams,
@@ -17,6 +18,9 @@ export function onDocumentFormatting(
   const path = URI.parse(textDocument.uri).fsPath;
   const orgText = currentDocument.getText();
   const preprocessedText = serverState.preprocessedFilesCacheMap.get(path);
+  if (orgText.length > MAX_INLINE_PARSE_INPUT_CHARS || (preprocessedText?.length ?? 0) > MAX_INLINE_PARSE_INPUT_CHARS) {
+    return [];
+  }
 
   const rows = orgText.split(wholeLineRegExp);
   const formattedLines = formatDocument(orgText, preprocessedText);

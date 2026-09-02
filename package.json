@@ -425,16 +425,16 @@
         "tads3.ifArchiveExtensionURL": {
           "scope": "window",
           "type": "string",
-          "default": "http://ifarchive.org/if-archive/programming/tads3/library/contributions/",
-          "pattern": "https?://ifarchive.org/.*",
-          "description": "Path the ifarchive directory for tads3 contributions"
+          "default": "https://ifarchive.org/if-archive/programming/tads3/library/contributions/",
+          "pattern": "https://ifarchive\\.org/.*",
+          "description": "HTTPS path to the IF Archive directory for TADS 3 contributions."
         },
         "tads2.ifArchiveExtensionURL": {
           "scope": "window",
           "type": "string",
-          "default": "http://ifarchive.org/if-archive/programming/tads2/examples/",
-          "pattern": "https?://ifarchive.org/.*",
-          "description": "Path the ifarchive directory for tads2 contributions"
+          "default": "https://ifarchive.org/if-archive/programming/tads2/examples/",
+          "pattern": "https://ifarchive\\.org/.*",
+          "description": "HTTPS path to the IF Archive directory for TADS 2 contributions."
         }
       }
     },
@@ -469,22 +469,10 @@
               "dapMode": {
                 "type": "string",
                 "enum": [
-                  "stdio",
-                  "socket",
-                  "tcp"
+                  "socket"
                 ],
-                "description": "DAP communication mode: stdio (stdin/stdout), socket (Unix domain socket), or tcp (TCP port).",
+                "description": "DAP communication mode. A private per-session Unix domain socket is required so the debugger peer cannot be replaced by another local process.",
                 "default": "socket"
-              },
-              "dapSocket": {
-                "type": "string",
-                "description": "Path to Unix domain socket for DAP communication (when dapMode is 'socket').",
-                "default": "/tmp/tads-dap.sock"
-              },
-              "dapPort": {
-                "type": "number",
-                "description": "TCP port for DAP communication (when dapMode is 'tcp').",
-                "default": 9876
               },
               "stopOnEntry": {
                 "type": "boolean",
@@ -521,22 +509,10 @@
               "dapMode": {
                 "type": "string",
                 "enum": [
-                  "stdio",
-                  "socket",
-                  "tcp"
+                  "socket"
                 ],
-                "description": "DAP communication mode: stdio (stdin/stdout), socket (Unix domain socket), or tcp (TCP port).",
+                "description": "DAP communication mode. A private per-session Unix domain socket is required so the debugger peer cannot be replaced by another local process.",
                 "default": "socket"
-              },
-              "dapSocket": {
-                "type": "string",
-                "description": "Path to Unix domain socket for DAP communication (when dapMode is 'socket').",
-                "default": "/tmp/tads-dap.sock"
-              },
-              "dapPort": {
-                "type": "number",
-                "description": "TCP port for DAP communication (when dapMode is 'tcp').",
-                "default": 9876
               },
               "stopOnEntry": {
                 "type": "boolean",
@@ -564,7 +540,6 @@
             "program": "${workspaceFolder}/game.t3",
             "frobd": "frobd",
             "dapMode": "socket",
-            "dapSocket": "/tmp/tads-dap.sock",
             "stopOnEntry": true
           }
         ],
@@ -579,7 +554,6 @@
               "program": "^\"\\${workspaceFolder}/game.t3\"",
               "frobd": "^\"frobd\"",
               "dapMode": "socket",
-              "dapSocket": "/tmp/tads-dap.sock",
               "stopOnEntry": true
             }
           }
