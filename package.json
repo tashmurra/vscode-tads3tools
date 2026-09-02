@@ -414,7 +414,7 @@
           "scope": "window",
           "type": "string",
           "default": "t3make",
-          "description": "Path to the tads3 compiler (t3make). "
+          "description": "Path to the tads3 compiler (t3make). Supports ${workspaceFolder} for project-relative paths. "
         },
         "tads3.enablePreprocessorCodeLens": {
           "scope": "resource",

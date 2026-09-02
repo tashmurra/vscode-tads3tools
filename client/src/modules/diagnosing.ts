@@ -12,6 +12,7 @@ import { runCommand } from "./run-command";
 import { DEBOUNCE_TIME, setErrorDiagnostics } from "../extension";
 import { parseAndPopulateErrors, parseAndPopulateTads2Errors } from "./tads-error-parser";
 import { parseSymbols } from "./parsing";
+import { expandWorkspaceFolder } from "./workspace-path";
 
 export async function diagnoseAndParseTads3(
   ctx: any,
@@ -120,7 +121,7 @@ export async function diagnose(textDocument: TextDocument, collection, extension
   if (extensionState.getUsingTads2()) {
     extensionState.setDiagnosing(true);
     const tads2ExtensionConfig = workspace.getConfiguration("tads2");
-    const compilerPath = tads2ExtensionConfig?.compiler?.path ?? "tadsc";
+    const compilerPath = expandWorkspaceFolder(tads2ExtensionConfig?.compiler?.path ?? "tadsc");
     const tads2libraryPath = tads2ExtensionConfig?.library?.path ?? "/usr/local/share/frobtads/tads2/";
     const mainFilePath = extensionState.getTads2MainFile().fsPath;
     const projectBaseFolder = dirname(mainFilePath);
@@ -135,9 +136,9 @@ export async function diagnose(textDocument: TextDocument, collection, extension
   extensionState.setDiagnosing(true);
   ensureObjFolderExistsInProjectRoot(extensionState);
   const tads3ExtensionConfig = workspace.getConfiguration("tads3"); // TODO: add configuration
-  const compilerPath = tads3ExtensionConfig?.compiler?.path ?? "t3make"; // TODO: add configuration
+  const compilerPath = expandWorkspaceFolder(tads3ExtensionConfig?.compiler?.path ?? "t3make"); // TODO: add configuration
   const resultOfCompilation = await runCommand(
-    `${compilerPath} -nobanner -q -f "${extensionState.getChosenMakefileUri().fsPath}"`,
+    `"${compilerPath}" -nobanner -q -f "${extensionState.getChosenMakefileUri().fsPath}"`,
   );
   const errorDiagnostics = parseDiagnostics(resultOfCompilation.toString(), textDocument, 3, collection);
   extensionState.setDiagnosing(false);
